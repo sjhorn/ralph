@@ -282,10 +282,70 @@ type RalphConfig struct {
 	TestCommand   string   `json:"test_command"`
 }
 
-type ClaudeResponse struct {
-	SessionID string `json:"session_id"`
-	Result    string `json:"result"`
+type ClaudeUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
+
+type ClaudeResponse struct {
+	SessionID    string      `json:"session_id"`
+	Result       string      `json:"result"`
+	TotalCostUSD float64     `json:"total_cost_usd"`
+	DurationMS   int         `json:"duration_ms"`
+	NumTurns     int         `json:"num_turns"`
+	Usage        ClaudeUsage `json:"usage"`
+}
+
+// UsageTracker accumulates token usage across multiple Claude calls.
+type UsageTracker struct {
+	TotalCostUSD             float64
+	TotalInputTokens         int
+	TotalOutputTokens        int
+	TotalCacheReadTokens     int
+	TotalCacheCreationTokens int
+	TotalDurationMS          int
+	TotalCalls               int
+}
+
+func (u *UsageTracker) Add(resp ClaudeResponse) {
+	u.TotalCostUSD += resp.TotalCostUSD
+	u.TotalInputTokens += resp.Usage.InputTokens
+	u.TotalOutputTokens += resp.Usage.OutputTokens
+	u.TotalCacheReadTokens += resp.Usage.CacheReadInputTokens
+	u.TotalCacheCreationTokens += resp.Usage.CacheCreationInputTokens
+	u.TotalDurationMS += resp.DurationMS
+	u.TotalCalls++
+}
+
+func formatTokens(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	}
+	return strconv.Itoa(n)
+}
+
+func (u *UsageTracker) Print() {
+	if u.TotalCalls == 0 {
+		return
+	}
+	fmt.Printf("\n  %s╭─ usage%s\n", dim, reset)
+	fmt.Printf("  %s│%s  %scalls:%s %d  %sduration:%s %ds\n",
+		dim, reset, dim, reset, u.TotalCalls, dim, reset, u.TotalDurationMS/1000)
+	fmt.Printf("  %s│%s  %sinput:%s %s  %soutput:%s %s  %scache read:%s %s  %scache write:%s %s\n",
+		dim, reset, dim, reset, formatTokens(u.TotalInputTokens),
+		dim, reset, formatTokens(u.TotalOutputTokens),
+		dim, reset, formatTokens(u.TotalCacheReadTokens),
+		dim, reset, formatTokens(u.TotalCacheCreationTokens))
+	fmt.Printf("  %s│%s  %scost:%s $%.4f\n", dim, reset, dim, reset, u.TotalCostUSD)
+	fmt.Printf("  %s╰─%s\n", dim, reset)
+}
+
+var usage UsageTracker
 
 // spinner runs a terminal spinner animation until stopped.
 type spinner struct {
@@ -419,6 +479,7 @@ func runClaude(claudeCmd string, sessionID string, prompt string, model string, 
 		return ClaudeResponse{}, fmt.Errorf("failed to parse response: %w\nraw output: %s", err, string(output))
 	}
 
+	usage.Add(resp)
 	return resp, nil
 }
 
@@ -798,6 +859,7 @@ func cmdPlan(args []string) {
 	}
 
 	printPRDSummary(prd, *output)
+	usage.Print()
 }
 
 // --- Subcommand: build ---
@@ -876,6 +938,7 @@ func cmdBuild(args []string) {
 		_, done, total := prdActuallyComplete()
 		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, total, reset)
 	}
+	usage.Print()
 }
 
 // --- TDD gated build ---
@@ -1138,6 +1201,7 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 		}
 		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, len(prd), reset)
 	}
+	usage.Print()
 }
 
 // handleRetryExhausted prompts the user in guided mode when retries are exhausted.
@@ -1414,6 +1478,7 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 	} else if total > 0 {
 		fmt.Printf("  %s%s✓ All %d PRD items complete!%s\n", bold, green, total, reset)
 	}
+	usage.Print()
 	fmt.Println()
 }
 
