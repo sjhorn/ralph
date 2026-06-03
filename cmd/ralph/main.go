@@ -128,8 +128,9 @@ func printWelcome() {
 
 	// Top border
 	titleStr := fmt.Sprintf("─── ralph v%s ", version)
+	titleRuneLen := len([]rune(titleStr))
 	fmt.Fprintf(os.Stderr, "╭%s%s┬%s╮\n",
-		titleStr, strings.Repeat("─", leftWidth-len(titleStr)), strings.Repeat("─", rightWidth))
+		titleStr, strings.Repeat("─", leftWidth-titleRuneLen), strings.Repeat("─", rightWidth))
 
 	for i := 0; i < rows; i++ {
 		// Left: art centered vertically with 1-row top padding
