@@ -1,0 +1,28 @@
+# Binaries
+/ralph
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Vendor directory
+vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Example project artifacts
+example/*/.dart_tool/
+example/*/.git/
+example/*/.ralph/
+
+# Ralph runtime directory (created in target projects)
+.ralph/
