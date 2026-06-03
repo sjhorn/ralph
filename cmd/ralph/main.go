@@ -1162,7 +1162,7 @@ func readLine(scanner *bufio.Scanner, prompt string) string {
 	return ""
 }
 
-func cmdGuided(claudeCmdFlag string) {
+func cmdGuided(claudeCmdFlag string, tddMode bool) {
 	fmt.Println()
 	printWelcome()
 	fmt.Println()
@@ -1199,6 +1199,10 @@ func cmdGuided(claudeCmdFlag string) {
 		}
 		fmt.Println()
 
+		if tddMode {
+			cmdBuildTDD(incomplete, effectiveModel, effectiveCmd, cfg, 3, true)
+			return
+		}
 		choice := readLine(scanner, "Continue building (b), TDD build (t), add to plan (p), start fresh (f), or quit (q)?")
 		switch strings.ToLower(choice) {
 		case "t", "tdd":
@@ -1330,6 +1334,10 @@ func cmdGuided(claudeCmdFlag string) {
 		return
 	}
 
+	if tddMode {
+		cmdBuildTDD(incomplete, effectiveModel, effectiveCmd, cfg, 3, true)
+		return
+	}
 	iterInput := readLine(scanner, fmt.Sprintf("How many iterations? (%d remaining, enter=all, 0=skip, tdd=TDD mode)", incomplete))
 	if iterInput == "tdd" {
 		cmdBuildTDD(incomplete, effectiveModel, effectiveCmd, cfg, 3, true)
@@ -1570,6 +1578,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %sUsage:%s\n", dim, reset)
 	fmt.Fprintf(os.Stderr, "    ralph                              Guided mode — plan, build, track\n")
+	fmt.Fprintf(os.Stderr, "    ralph --tdd                        Guided mode with TDD gated build\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %sCommands:%s\n", dim, reset)
 	fmt.Fprintf(os.Stderr, "    plan  \"description\"                 Generate a PRD through Q&A\n")
@@ -1581,6 +1590,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "    update                              Update ralph to latest release\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %sGlobal flags:%s\n", dim, reset)
+	fmt.Fprintf(os.Stderr, "    --tdd                               Enable TDD mode (guided or build)\n")
 	fmt.Fprintf(os.Stderr, "    --claude-cmd <command>              Use a different CLI (default: claude)\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %sExamples:%s\n", dim, reset)
@@ -1604,13 +1614,14 @@ func main() {
 	// Parse global flags — stops at first non-flag arg (the subcommand)
 	globalFlags := flag.NewFlagSet("ralph", flag.ContinueOnError)
 	claudeCmd := globalFlags.String("claude-cmd", "", "Claude CLI command (default: claude)")
+	tddFlag := globalFlags.Bool("tdd", false, "Enable TDD mode in guided flow")
 	globalFlags.Usage = func() {} // suppress default usage on parse error
 	globalFlags.Parse(os.Args[1:])
 
 	remaining := globalFlags.Args() // everything after flags
 
 	if len(remaining) == 0 {
-		cmdGuided(*claudeCmd)
+		cmdGuided(*claudeCmd, *tddFlag)
 		return
 	}
 

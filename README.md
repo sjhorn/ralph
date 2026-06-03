@@ -96,6 +96,7 @@ This walks you through the full workflow interactively:
 
 ```bash
 ralph                          # interactive plan → build → status
+ralph --tdd                    # guided mode, TDD build after planning
 ralph --claude-cmd claude-local  # use a different Claude CLI
 ```
 
