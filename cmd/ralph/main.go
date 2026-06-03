@@ -249,6 +249,11 @@ From these, determine:
 2. The test framework in use (or the standard one for this language)
 3. The exact shell command to run all tests
 
+IMPORTANT: Verify the command will actually work on this system:
+- Run "which <binary>" or "<binary> --version" to check the binary exists
+- For Python: check if "python" or "python3" is available (many systems only have python3)
+- Use the binary name that actually exists on the system
+
 Output ONLY a single JSON object with no markdown fencing:
 {
   "test_command": "the exact command to run tests",
@@ -259,7 +264,7 @@ Examples of test commands by language:
 - Go: "go test ./..."
 - Dart/Flutter: "dart test" or "flutter test"
 - Node.js: "npm test" or "npx jest" or "npx vitest run"
-- Python: "pytest" or "python -m pytest"
+- Python: "python3 -m pytest" or "python -m pytest" (use whichever binary exists)
 - Rust: "cargo test"
 - Java/Gradle: "./gradlew test"
 - Java/Maven: "mvn test"
