@@ -470,7 +470,7 @@ func savePRD(prd []PRDItem) error {
 func ensureInit() error {
 	// Ensure git repo exists (no-op if already initialized)
 	if _, err := os.Stat(".git"); os.IsNotExist(err) {
-		cmd := exec.Command("git", "init")
+		cmd := exec.Command("git", "init", "-b", "main")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
