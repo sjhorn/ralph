@@ -14,16 +14,28 @@ Inspired by [Adam Tuttle's](https://adamtuttle.codes) RALPH workflow for Claude 
 
 ### Download a release (no Go required)
 
-Grab the latest binary for your platform from [GitHub Releases](https://github.com/sjhorn/ralph/releases), extract it, and add it to your PATH.
+Download the latest binary for your platform from [GitHub Releases](https://github.com/sjhorn/ralph/releases), extract it, and add it to your PATH.
+
+**macOS / Linux:**
 
 ```bash
-# macOS (Apple Silicon)
-curl -sL https://github.com/sjhorn/ralph/releases/latest/download/ralph_$(curl -s https://api.github.com/repos/sjhorn/ralph/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_darwin_arm64.tar.gz | tar xz
-sudo mv ralph /usr/local/bin/
+# Set your platform: darwin_arm64, darwin_amd64, linux_amd64, linux_arm64
+PLATFORM="darwin_arm64"
 
-# Linux (amd64)
-curl -sL https://github.com/sjhorn/ralph/releases/latest/download/ralph_$(curl -s https://api.github.com/repos/sjhorn/ralph/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_amd64.tar.gz | tar xz
+VERSION=$(curl -s https://api.github.com/repos/sjhorn/ralph/releases/latest | grep tag_name | cut -d'"' -f4 | sed 's/^v//')
+curl -sL "https://github.com/sjhorn/ralph/releases/download/v${VERSION}/ralph_${VERSION}_${PLATFORM}.tar.gz" | tar xz
 sudo mv ralph /usr/local/bin/
+```
+
+**Windows (PowerShell):**
+
+```powershell
+# Download the latest Windows release
+$version = (Invoke-RestMethod "https://api.github.com/repos/sjhorn/ralph/releases/latest").tag_name -replace '^v',''
+Invoke-WebRequest "https://github.com/sjhorn/ralph/releases/download/v$version/ralph_${version}_windows_amd64.zip" -OutFile ralph.zip
+Expand-Archive ralph.zip -DestinationPath .
+Move-Item ralph.exe "$env:LOCALAPPDATA\Microsoft\WindowsApps\"
+Remove-Item ralph.zip
 ```
 
 ### Go install
