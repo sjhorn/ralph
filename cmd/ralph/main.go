@@ -225,8 +225,12 @@ Rules:
 
 const testCommandSuggestPrompt = `Analyze this project to determine the correct command to run its test suite.
 
-Inspect the project files — look at build files, config files, existing test files, and project structure to determine:
-1. The programming language(s) used
+Inspect the project using TWO sources of information:
+1. Existing project files — build files, config files, test files, project structure
+2. The PRD at .ralph/prd.json — if the project is new/empty, the PRD describes what language and framework will be used
+
+From these, determine:
+1. The programming language(s) used or planned
 2. The test framework in use (or the standard one for this language)
 3. The exact shell command to run all tests
 
