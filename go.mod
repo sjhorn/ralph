@@ -1,3 +1,3 @@
-module github.com/shorn/ralph
+module github.com/sjhorn/ralph
 
 go 1.22

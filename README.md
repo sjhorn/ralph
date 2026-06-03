@@ -2,9 +2,9 @@
 
 <img src="docs/ralph.png" width="128" alt="Ralph" align="right">
 
-AI-powered feature planner and builder. Ralph uses Claude to turn a feature description into a structured PRD through interactive Q&A, then implements each requirement one at a time — with automatic retries and git commits.
+AI-powered feature planner and builder. Ralph uses Claude to turn a feature description into a structured PRD through interactive Q&A, then implements each requirement iteratively — with Claude managing PRD updates, progress tracking, and git commits.
 
-Inspired by [Adam Tuttle's](https://adamtuttle.codes) workflow.
+Inspired by [Adam Tuttle's](https://adamtuttle.codes) RALPH workflow for Claude Code.
 
 ## Prerequisites
 
@@ -14,31 +14,56 @@ Inspired by [Adam Tuttle's](https://adamtuttle.codes) workflow.
 ## Installation
 
 ```bash
-go install github.com/shorn/ralph/cmd/ralph@latest
+go install github.com/sjhorn/ralph/cmd/ralph@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/shorn/ralph.git
+git clone https://github.com/sjhorn/ralph.git
 cd ralph
 make build
 ```
 
-## Usage
+## Quick Start
 
-### 1. Initialize a project
+The simplest way to use ralph is the guided mode — just run `ralph` with no arguments:
+
+```bash
+cd your-project
+ralph
+```
+
+This walks you through the full workflow interactively:
+
+1. Initializes `.ralph/` if needed
+2. If an existing PRD has incomplete items, offers to **build**, **add to plan**, **start fresh**, or **quit**
+3. Asks for a feature description and runs Q&A with Claude to generate a PRD
+4. Asks how many iterations to run
+5. Builds iteratively, showing progress after each iteration
+6. Reports final status
+
+## Commands
+
+### `ralph` (guided mode)
+
+```bash
+ralph                          # interactive plan → build → status
+ralph --claude-cmd claude-local  # use a different Claude CLI
+```
+
+### `ralph init`
 
 ```bash
 ralph init
 ```
 
-Creates a `.ralph/` directory with:
-- `config.json` — model, allowed tools, check commands
+Scaffolds a `.ralph/` directory with:
+- `config.json` — model, allowed tools, check commands, claude command
 - `prd.json` — the requirements (starts empty)
-- `progress.md` — build log
+- `progress.md` — append-only build log
 
-### 2. Plan a feature
+### `ralph plan "description"`
 
 ```bash
 ralph plan "add user authentication with OAuth"
@@ -46,28 +71,36 @@ ralph plan "add user authentication with OAuth"
 
 Claude asks clarifying questions in rounds. Answer them, and when it has enough context it generates a structured PRD saved to `.ralph/prd.json`.
 
-Options:
+Running `plan` again loads the existing PRD so Claude can build on previous work.
+
+Flags:
 - `--model <model>` — override the configured Claude model
+- `--claude-cmd <cmd>` — use a different Claude CLI
 - `--max-rounds <n>` — max Q&A rounds (default: 10)
 - `--output <path>` — PRD output path (default: `.ralph/prd.json`)
 
-### 3. Build requirements
+### `ralph build [N]`
 
 ```bash
-ralph build      # implement the next incomplete item
-ralph build 3    # implement the next 3 items
+ralph build      # run 1 iteration
+ralph build 5    # run up to 5 iterations
 ```
 
-For each item, Ralph:
-1. Sends the requirement to Claude with implementation steps
-2. Runs any check commands from `config.json`
-3. Retries up to 3 times if checks fail
-4. Marks the item as complete and commits
+Each iteration is a fresh Claude session that:
+1. Reads the full PRD and progress log
+2. Picks the highest-priority incomplete item
+3. Implements it, reading existing code first
+4. Updates `prd.json` (marks complete or leaves for next iteration)
+5. Appends notes to `progress.md`
+6. Makes a git commit
 
-Options:
+Stops early if all items are complete or Claude reports it's blocked.
+
+Flags:
 - `--model <model>` — override the configured Claude model
+- `--claude-cmd <cmd>` — use a different Claude CLI
 
-### 4. Check progress
+### `ralph status`
 
 ```bash
 ralph status
@@ -75,13 +108,45 @@ ralph status
 
 Shows which PRD items are complete and which remain.
 
-## `.ralph/` directory
+## Configuration
+
+### `.ralph/config.json`
+
+```json
+{
+  "model": "sonnet",
+  "allowed_tools": ["Read", "Edit", "Write", "Bash"],
+  "check_commands": [],
+  "claude_command": "claude"
+}
+```
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `model` | Claude model to use | `sonnet` |
+| `allowed_tools` | Tools Claude can use during build | `Read, Edit, Write, Bash` |
+| `check_commands` | Shell commands Claude should run to verify work | `[]` |
+| `claude_command` | CLI binary to invoke | `claude` |
+
+The `--claude-cmd` flag overrides `claude_command` for a single run, useful for testing with local models or alternative CLI wrappers.
+
+### `.ralph/` directory
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Model, allowed tools, check commands |
+| `config.json` | Model, tools, check commands, CLI command |
 | `prd.json` | The PRD — array of requirements with pass/fail status |
-| `progress.md` | Append-only log of completed items |
+| `progress.md` | Append-only log written by Claude each iteration |
+
+## How It Works
+
+Ralph implements the [RALPH workflow](docs/adam-tuttle-ralph-workflow.md) as a Go CLI:
+
+1. **Plan** — You describe a feature. Claude asks clarifying questions, then generates a structured PRD with categorized requirements and implementation steps.
+
+2. **Build** — Each iteration gives Claude the full PRD and progress log. Claude picks the highest-priority incomplete item, implements it, updates the PRD, logs progress, and commits. If an item is too complex for one iteration, Claude can leave it incomplete for the next iteration to pick up.
+
+3. **Track** — `prd.json` tracks what's done. `progress.md` serves as institutional memory between iterations. Git commits create a reviewable history.
 
 ## License
 
