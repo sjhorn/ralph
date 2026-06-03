@@ -54,19 +54,21 @@ make build
 
 ### Upgrading
 
-Check your current version with `ralph --help` — the version is shown in the banner title bar.
-
-**Binary:** Re-run the same download script for your platform — it always fetches the latest release. Or download manually from [GitHub Releases](https://github.com/sjhorn/ralph/releases) and replace the existing binary.
-
-**Go install:**
+The easiest way to update is the built-in command:
 
 ```bash
-go install github.com/sjhorn/ralph/cmd/ralph@latest
+ralph update
 ```
 
-**Build from source:**
+This detects your platform, downloads the latest release, and replaces the current binary in-place.
+
+**Alternative methods:**
 
 ```bash
+# Go install
+go install github.com/sjhorn/ralph/cmd/ralph@latest
+
+# Build from source
 cd ralph && git pull && make build
 ```
 
@@ -180,6 +182,14 @@ ralph status
 ```
 
 Shows which PRD items are complete and which remain.
+
+### `ralph update`
+
+```bash
+ralph update
+```
+
+Self-updates ralph to the latest GitHub release. Detects your OS and architecture, downloads the matching binary, and replaces the current one in-place. Refuses to run on `dev` builds (use `go install` or rebuild from source instead).
 
 ## Configuration
 

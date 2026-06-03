@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1402,6 +1405,163 @@ func cmdGuided(claudeCmdFlag string) {
 	fmt.Println()
 }
 
+// --- Update ---
+
+type githubRelease struct {
+	TagName string `json:"tag_name"`
+}
+
+func cmdUpdate() {
+	if version == "dev" {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Cannot update a dev build — install from a release or use `go install`%s\n\n", bold, red, reset)
+		os.Exit(1)
+	}
+
+	fmt.Printf("  %s%s▸ Current version: %s%s\n", bold, cyan, version, reset)
+
+	// Fetch latest release tag
+	spin := newSpinner("Checking for updates...")
+	resp, err := http.Get("https://api.github.com/repos/sjhorn/ralph/releases/latest")
+	spin.stop()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to check for updates: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var release githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to parse release info: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+
+	latest := strings.TrimPrefix(release.TagName, "v")
+	if latest == version {
+		fmt.Printf("  %s%s✓ Already up to date (v%s)%s\n\n", bold, green, version, reset)
+		return
+	}
+
+	fmt.Printf("  %s%s▸ New version available: v%s%s\n", bold, cyan, latest, reset)
+
+	// Determine platform
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	platform := goos + "_" + goarch
+
+	ext := "tar.gz"
+	if goos == "windows" {
+		ext = "zip"
+	}
+
+	url := fmt.Sprintf("https://github.com/sjhorn/ralph/releases/download/v%s/ralph_%s_%s.%s", latest, latest, platform, ext)
+
+	// Download to temp file
+	spin = newSpinner("Downloading...")
+	dlResp, err := http.Get(url)
+	spin.stop()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Download failed: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	defer dlResp.Body.Close()
+
+	if dlResp.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Download failed: HTTP %d for %s%s\n\n", bold, red, dlResp.StatusCode, url, reset)
+		os.Exit(1)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "ralph-update-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to create temp dir: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	archivePath := filepath.Join(tmpDir, "ralph."+ext)
+	f, err := os.Create(archivePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to create temp file: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	if _, err := io.Copy(f, dlResp.Body); err != nil {
+		f.Close()
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Download failed: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	f.Close()
+
+	// Extract
+	var extractCmd *exec.Cmd
+	if ext == "zip" {
+		extractCmd = exec.Command("unzip", "-o", archivePath, "-d", tmpDir)
+	} else {
+		extractCmd = exec.Command("tar", "xzf", archivePath, "-C", tmpDir)
+	}
+	if out, err := extractCmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Extract failed: %v\n%s%s\n\n", bold, red, err, string(out), reset)
+		os.Exit(1)
+	}
+
+	// Find current binary path and replace it
+	currentBin, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Cannot determine current binary path: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	currentBin, err = filepath.EvalSymlinks(currentBin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Cannot resolve binary path: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+
+	newBin := filepath.Join(tmpDir, "ralph")
+	if goos == "windows" {
+		newBin += ".exe"
+	}
+
+	// Check the new binary exists
+	if _, err := os.Stat(newBin); err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Extracted binary not found at %s: %v%s\n\n", bold, red, newBin, err, reset)
+		os.Exit(1)
+	}
+
+	// Replace: rename old, copy new, remove old
+	backupPath := currentBin + ".bak"
+	if err := os.Rename(currentBin, backupPath); err != nil {
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Cannot replace binary (try with sudo): %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+
+	src, err := os.Open(newBin)
+	if err != nil {
+		os.Rename(backupPath, currentBin) // rollback
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to open new binary: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(currentBin, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		src.Close()
+		os.Rename(backupPath, currentBin) // rollback
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to write new binary (try with sudo): %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Rename(backupPath, currentBin) // rollback
+		fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to copy new binary: %v%s\n\n", bold, red, err, reset)
+		os.Exit(1)
+	}
+	dst.Close()
+
+	os.Remove(backupPath)
+
+	fmt.Printf("  %s%s✓ Updated ralph: v%s → v%s%s\n", bold, green, version, latest, reset)
+	fmt.Printf("  %s%s%s\n\n", dim, currentBin, reset)
+}
+
 // --- Main ---
 
 func printUsage() {
@@ -1418,6 +1578,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "    build --tdd --retries 5 [N]         TDD with custom retry count (default: 3)\n")
 	fmt.Fprintf(os.Stderr, "    init                                Scaffold .ralph/ directory\n")
 	fmt.Fprintf(os.Stderr, "    status                              Show PRD progress\n")
+	fmt.Fprintf(os.Stderr, "    update                              Update ralph to latest release\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  %sGlobal flags:%s\n", dim, reset)
 	fmt.Fprintf(os.Stderr, "    --claude-cmd <command>              Use a different CLI (default: claude)\n")
@@ -1462,6 +1623,8 @@ func main() {
 		cmdBuild(remaining[1:])
 	case "status":
 		cmdStatus()
+	case "update":
+		cmdUpdate()
 	default:
 		fmt.Fprintf(os.Stderr, "  %s%sUnknown command:%s %s\n\n", bold, red, reset, remaining[0])
 		printUsage()
