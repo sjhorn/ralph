@@ -23,6 +23,8 @@ Thumbs.db
 example/*/.dart_tool/
 example/*/.git/
 example/*/.ralph/
+example/_mandelbrot/
+example/mandelbrot/
 
 # Ralph runtime directory (created in target projects)
 .ralph/
