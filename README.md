@@ -1,5 +1,7 @@
 # ralph
 
+<img src="docs/ralph.png" width="128" alt="Ralph" align="right">
+
 AI-powered feature planner and builder. Ralph uses Claude to turn a feature description into a structured PRD through interactive Q&A, then implements each requirement one at a time — with automatic retries and git commits.
 
 Inspired by [Adam Tuttle's](https://adamtuttle.codes) workflow.
