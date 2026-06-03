@@ -144,6 +144,34 @@ Stops early if all items are complete or Claude reports it's blocked.
 Flags:
 - `--model <model>` — override the configured Claude model
 - `--claude-cmd <cmd>` — use a different Claude CLI
+- `--tdd` — enable TDD gated workflow (see below)
+- `--retries <n>` — max retries per TDD phase (default: 3)
+
+### TDD Mode
+
+```bash
+ralph build --tdd 3        # TDD gated build, 3 iterations
+ralph build --tdd --retries 5 1  # TDD with 5 retries per phase
+```
+
+TDD mode adds mechanical verification to each build iteration. Instead of trusting Claude to self-report, ralph gates each step with real test execution:
+
+```
+For each PRD item:
+  1. Claude writes failing tests for the item
+  2. Gate: ralph runs test_command, expects failure (TDD Red)
+  3. Claude implements the feature
+  4. Gate: ralph runs test_command, expects success (TDD Green)
+  5. Gate: ralph runs each check_command (lint, vet, etc.)
+```
+
+If a gate fails, Claude retries with the gate output as feedback. After `--retries` exhausted:
+- **Headless** (`ralph build --tdd`): halts with non-zero exit
+- **Guided** (`ralph` → tdd): prompts to skip, retry, or quit
+
+**Auto-detection**: If `test_command` is not set in config, ralph uses Claude to analyze the project and suggest the right command. In headless mode, the suggestion is auto-accepted; in guided mode, you can accept, edit, or reject it.
+
+TDD mode is also available in guided mode — type `tdd` at the iteration prompt.
 
 ### `ralph status`
 
@@ -161,7 +189,8 @@ Shows which PRD items are complete and which remain.
 {
   "model": "sonnet",
   "allowed_tools": ["Read", "Edit", "Write", "Bash"],
-  "check_commands": [],
+  "check_commands": ["go vet ./..."],
+  "test_command": "go test ./...",
   "claude_command": "claude"
 }
 ```
@@ -170,7 +199,8 @@ Shows which PRD items are complete and which remain.
 |-------|-------------|---------|
 | `model` | Claude model to use | `sonnet` |
 | `allowed_tools` | Tools Claude can use during build | `Read, Edit, Write, Bash` |
-| `check_commands` | Shell commands Claude should run to verify work | `[]` |
+| `check_commands` | Shell commands to verify work (lint, vet, etc.) | `[]` |
+| `test_command` | Test command for TDD mode gates | `""` (auto-detected) |
 | `claude_command` | CLI binary to invoke | `claude` |
 
 The `--claude-cmd` flag overrides `claude_command` for a single run, useful for testing with local models or alternative CLI wrappers.

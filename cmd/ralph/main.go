@@ -185,6 +185,66 @@ PRD JSON format:
 Set "passes" to false for all items (they haven't been implemented yet).
 Be thorough but concise. Group related work into logical categories.`
 
+const tddTestWriterPrompt = `You are writing tests for a specific feature requirement. Study the codebase first to understand the language, framework, testing conventions, and project structure.
+
+Your task: write FAILING tests for this PRD item:
+%s
+
+Implementation steps:
+%s
+
+Rules:
+1. Study existing test files to match the project's testing patterns and conventions.
+2. Write tests that verify the described behavior — they MUST reference code/functions/endpoints that DO NOT EXIST YET.
+3. Tests should fail because the implementation is missing, NOT because of syntax errors.
+4. Only create or modify test files. Do NOT implement any production code.
+5. Make a git commit with your test files when done.
+6. If you cannot determine the testing approach, output <BLOCKED> followed by what you need.`
+
+const tddImplementPrompt = `You are implementing a feature to make failing tests pass.
+
+The PRD item you are implementing:
+%s
+
+Implementation steps:
+%s
+
+Rules:
+1. Read the failing test files first to understand what is expected.
+2. Implement the feature so ALL tests pass.
+3. You may fix test compilation errors (e.g. import paths, type mismatches from your test-writing phase) but do NOT weaken assertions or delete test cases.
+4. Run the test command to verify tests pass.
+5. If check commands are configured in .ralph/config.json, run them to verify your work.
+6. Update .ralph/prd.json — set passes: true for the item you completed.
+7. Append your progress to .ralph/progress.md.
+8. Make a git commit of your work.
+9. If you are blocked, output <BLOCKED> followed by what you need.`
+
+const testCommandSuggestPrompt = `Analyze this project to determine the correct command to run its test suite.
+
+Inspect the project files — look at build files, config files, existing test files, and project structure to determine:
+1. The programming language(s) used
+2. The test framework in use (or the standard one for this language)
+3. The exact shell command to run all tests
+
+Output ONLY a single JSON object with no markdown fencing:
+{
+  "test_command": "the exact command to run tests",
+  "reasoning": "brief explanation of what you found"
+}
+
+Examples of test commands by language:
+- Go: "go test ./..."
+- Dart/Flutter: "dart test" or "flutter test"
+- Node.js: "npm test" or "npx jest" or "npx vitest run"
+- Python: "pytest" or "python -m pytest"
+- Rust: "cargo test"
+- Java/Gradle: "./gradlew test"
+- Java/Maven: "mvn test"
+
+If you cannot determine a test command, output:
+{"test_command": "", "reasoning": "why you couldn't determine it"}`
+
 const buildSystemPrompt = `Study .ralph/prd.json and .ralph/progress.md.
 
 1. Find the highest-priority incomplete item to work on (ignore anything with passes: true) and work only on that item. This should be the one YOU decide has the highest priority — not necessarily the first item in the list.
@@ -212,6 +272,7 @@ type RalphConfig struct {
 	Model         string   `json:"model"`
 	AllowedTools  []string `json:"allowed_tools"`
 	ClaudeCommand string   `json:"claude_command"`
+	TestCommand   string   `json:"test_command"`
 }
 
 type ClaudeResponse struct {
@@ -438,6 +499,39 @@ func resolveClaudeCmd(flagVal string, cfg RalphConfig) string {
 	return "claude"
 }
 
+// testCommandSuggestion is the JSON response from Claude when suggesting a test command.
+type testCommandSuggestion struct {
+	TestCommand string `json:"test_command"`
+	Reasoning   string `json:"reasoning"`
+}
+
+// suggestTestCommand asks Claude to inspect the project and suggest the right test command.
+func suggestTestCommand(claudeCmd string, model string) (string, string, error) {
+	resp, err := runClaude(claudeCmd, "", testCommandSuggestPrompt, model, []string{"Read", "Bash"})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to detect test command: %w", err)
+	}
+
+	var suggestion testCommandSuggestion
+	if err := json.Unmarshal([]byte(strings.TrimSpace(resp.Result)), &suggestion); err != nil {
+		return "", "", fmt.Errorf("could not parse suggestion: %w\nraw: %s", err, resp.Result)
+	}
+
+	if suggestion.TestCommand == "" {
+		return "", suggestion.Reasoning, fmt.Errorf("could not determine test command: %s", suggestion.Reasoning)
+	}
+
+	return suggestion.TestCommand, suggestion.Reasoning, nil
+}
+
+func saveConfig(cfg RalphConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(".ralph/config.json", append(data, '\n'), 0644)
+}
+
 func loadConfig() RalphConfig {
 	cfg := defaultConfig()
 	data, err := os.ReadFile(".ralph/config.json")
@@ -458,6 +552,22 @@ func loadPRD() ([]PRDItem, error) {
 		return nil, fmt.Errorf("invalid prd.json: %w", err)
 	}
 	return prd, nil
+}
+
+// prdActuallyComplete re-reads the PRD from disk and checks whether all items
+// truly have passes: true. Returns (allDone, done, total).
+func prdActuallyComplete() (bool, int, int) {
+	prd, err := loadPRD()
+	if err != nil || len(prd) == 0 {
+		return false, 0, 0
+	}
+	done := 0
+	for _, item := range prd {
+		if item.Passes {
+			done++
+		}
+	}
+	return done == len(prd), done, len(prd)
 }
 
 func savePRD(prd []PRDItem) error {
@@ -689,6 +799,8 @@ func cmdBuild(args []string) {
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	model := fs.String("model", "", "Claude model to use")
 	claudeCmd := fs.String("claude-cmd", "", "Claude CLI command (default: claude)")
+	tdd := fs.Bool("tdd", false, "Enable TDD gated workflow")
+	maxRetries := fs.Int("retries", 3, "Max retries per TDD phase")
 	fs.Parse(args)
 
 	iterations := 1
@@ -707,6 +819,11 @@ func cmdBuild(args []string) {
 		effectiveModel = *model
 	}
 	effectiveCmd := resolveClaudeCmd(*claudeCmd, cfg)
+
+	if *tdd {
+		cmdBuildTDD(iterations, effectiveModel, effectiveCmd, cfg, *maxRetries, false)
+		return
+	}
 
 	allowedTools := cfg.AllowedTools
 	if len(allowedTools) == 0 {
@@ -733,8 +850,12 @@ func cmdBuild(args []string) {
 		}
 
 		if strings.Contains(resp.Result, "<COMPLETE>") {
-			fmt.Printf("  %s%s✓ PRD complete!%s\n\n", bold, green, reset)
-			break
+			allDone, done, total := prdActuallyComplete()
+			if allDone {
+				fmt.Printf("  %s%s✓ PRD complete!%s\n\n", bold, green, reset)
+				break
+			}
+			fmt.Printf("  %s%s⚠ Claude reported complete, but %d/%d PRD items remain — continuing%s\n\n", bold, yellow, total-done, total, reset)
 		}
 
 		if strings.Contains(resp.Result, "<BLOCKED>") {
@@ -745,15 +866,287 @@ func cmdBuild(args []string) {
 		fmt.Printf("  %s%s✓ Iteration %d complete%s\n\n", bold, green, iter, reset)
 
 		// Show current PRD status
-		prd, _ := loadPRD()
+		_, done, total := prdActuallyComplete()
+		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, total, reset)
+	}
+}
+
+// --- TDD gated build ---
+
+// runGate runs a shell command and checks the exit code.
+// If expectFailure is true, the gate passes when the command exits non-zero.
+// Returns (passed, combinedOutput).
+func runGate(command string, expectFailure bool) (bool, string) {
+	cmd := exec.Command("sh", "-c", command)
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	if expectFailure {
+		// Gate passes if the command fails (non-zero exit)
+		return err != nil, outputStr
+	}
+	// Gate passes if the command succeeds (zero exit)
+	return err == nil, outputStr
+}
+
+func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig, maxRetries int, guided bool) {
+	if cfg.TestCommand == "" {
+		fmt.Printf("  %s%s⚡ No test_command configured — analyzing project...%s\n\n", bold, yellow, reset)
+		spin := newSpinner("Detecting test command...")
+		suggested, reasoning, err := suggestTestCommand(claudeCmd, model)
+		spin.stop()
+
+		if err != nil || suggested == "" {
+			fmt.Fprintf(os.Stderr, "  %s%s✗ Could not detect test command%s\n", bold, red, reset)
+			if reasoning != "" {
+				fmt.Fprintf(os.Stderr, "  %s%s%s\n", dim, reasoning, reset)
+			}
+			fmt.Fprintf(os.Stderr, "  %sAdd test_command to .ralph/config.json manually, e.g.: \"test_command\": \"go test ./...\"%s\n\n", dim, reset)
+			os.Exit(1)
+		}
+
+		fmt.Printf("  %s%s▸ Suggested:%s %s%s%s\n", bold, cyan, reset, yellow, suggested, reset)
+		if reasoning != "" {
+			fmt.Printf("  %s%s%s\n", dim, reasoning, reset)
+		}
+		fmt.Println()
+
+		if guided {
+			scanner := bufio.NewScanner(os.Stdin)
+			choice := readLine(scanner, "Accept (y), edit (e), or reject (n)?")
+			switch strings.ToLower(choice) {
+			case "y", "yes", "":
+				cfg.TestCommand = suggested
+			case "e", "edit":
+				custom := readLine(scanner, "Enter test command:")
+				if custom == "" {
+					fmt.Fprintf(os.Stderr, "  %s%s✗ No command entered, aborting.%s\n\n", bold, red, reset)
+					os.Exit(1)
+				}
+				cfg.TestCommand = custom
+			default:
+				fmt.Fprintf(os.Stderr, "  %s%s✗ Aborted.%s\n\n", bold, red, reset)
+				os.Exit(1)
+			}
+		} else {
+			cfg.TestCommand = suggested
+		}
+
+		if err := saveConfig(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s%s✗ Failed to save config: %v%s\n\n", bold, red, err, reset)
+			os.Exit(1)
+		}
+		fmt.Printf("  %s%s✓ Saved test_command to .ralph/config.json%s\n\n", bold, green, reset)
+	}
+
+	allowedTools := cfg.AllowedTools
+	if len(allowedTools) == 0 {
+		allowedTools = []string{"Read", "Edit", "Write", "Bash"}
+	}
+
+	fmt.Println()
+	fmt.Printf("  %s%s╭─ ralph build (TDD)%s\n", bold, cyan, reset)
+	fmt.Printf("  %s│%s  %smodel:%s %s  %siterations:%s %d  %sretries:%s %d\n",
+		cyan, reset, dim, reset, model, dim, reset, iterations, dim, reset, maxRetries)
+	fmt.Printf("  %s│%s  %stest:%s %s\n", cyan, reset, dim, reset, cfg.TestCommand)
+	if len(cfg.CheckCommands) > 0 {
+		fmt.Printf("  %s│%s  %schecks:%s %s\n", cyan, reset, dim, reset, strings.Join(cfg.CheckCommands, ", "))
+	}
+	fmt.Printf("  %s╰─%s\n", cyan, reset)
+	fmt.Println()
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for iter := 1; iter <= iterations; iter++ {
+		prd, err := loadPRD()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
+			os.Exit(1)
+		}
+
+		// Find next incomplete item
+		itemIdx := -1
+		for i, item := range prd {
+			if !item.Passes {
+				itemIdx = i
+				break
+			}
+		}
+		if itemIdx == -1 {
+			fmt.Printf("  %s%s✓ All PRD items complete!%s\n\n", bold, green, reset)
+			break
+		}
+
+		item := prd[itemIdx]
+		stepsStr := strings.Join(item.Steps, "\n- ")
+		if stepsStr != "" {
+			stepsStr = "- " + stepsStr
+		}
+
+		fmt.Printf("  %s%s▸ Item %d/%d: %s%s\n", bold, cyan, itemIdx+1, len(prd), item.Description, reset)
+		fmt.Println()
+
+		// Phase 1: Write Tests
+		phase1Success := false
+		var lastGateOutput string
+		for retry := 0; retry <= maxRetries; retry++ {
+			prompt := fmt.Sprintf(tddTestWriterPrompt, item.Description, stepsStr)
+			if retry > 0 {
+				prompt += fmt.Sprintf("\n\nPREVIOUS ATTEMPT FAILED — the tests were expected to fail but they passed.\nGate output:\n%s\n\nPlease write tests that reference unimplemented code so they FAIL.", lastGateOutput)
+			}
+
+			retryLabel := ""
+			if retry > 0 {
+				retryLabel = fmt.Sprintf(" (retry %d/%d)", retry, maxRetries)
+			}
+			spin := newSpinner(fmt.Sprintf("Writing tests%s...", retryLabel))
+			resp, err := runClaude(claudeCmd, "", prompt, model, allowedTools)
+			spin.stop()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
+				os.Exit(1)
+			}
+
+			if strings.Contains(resp.Result, "<BLOCKED>") {
+				fmt.Printf("  %s%s⚠ Blocked: %s%s\n\n", bold, yellow, strings.TrimSpace(resp.Result), reset)
+				break
+			}
+
+			// Gate: TDD Red — tests must fail
+			passed, output := runGate(cfg.TestCommand, true)
+			lastGateOutput = output
+			if passed {
+				fmt.Printf("  %s%s✓ TDD Red — tests fail as expected%s\n", bold, green, reset)
+				phase1Success = true
+				break
+			}
+
+			fmt.Printf("  %s%s✗ TDD Red — tests should fail but passed%s\n", bold, red, reset)
+			if retry == maxRetries {
+				fmt.Printf("  %s%s⚠ Retries exhausted for test-writing phase%s\n", bold, yellow, reset)
+			}
+		}
+
+		if !phase1Success {
+			if guided {
+				choice := handleRetryExhausted(scanner, "test-writing", item.Description)
+				if choice == "skip" {
+					continue
+				} else if choice == "quit" {
+					return
+				}
+				// "retry" — but we already exhausted retries, so skip for now
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  %s%s✗ TDD Red gate failed after %d retries — halting build%s\n\n", bold, red, maxRetries, reset)
+			os.Exit(1)
+		}
+
+		// Phase 2: Implement
+		phase2Success := false
+		lastGateOutput = ""
+		for retry := 0; retry <= maxRetries; retry++ {
+			prompt := fmt.Sprintf(tddImplementPrompt, item.Description, stepsStr)
+			if retry > 0 {
+				prompt += fmt.Sprintf("\n\nPREVIOUS ATTEMPT FAILED — gates did not pass.\nGate output:\n%s\n\nFix the implementation so all tests and checks pass.", lastGateOutput)
+			}
+
+			retryLabel := ""
+			if retry > 0 {
+				retryLabel = fmt.Sprintf(" (retry %d/%d)", retry, maxRetries)
+			}
+			spin := newSpinner(fmt.Sprintf("Implementing%s...", retryLabel))
+			resp, err := runClaude(claudeCmd, "", prompt, model, allowedTools)
+			spin.stop()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
+				os.Exit(1)
+			}
+
+			if strings.Contains(resp.Result, "<BLOCKED>") {
+				fmt.Printf("  %s%s⚠ Blocked: %s%s\n\n", bold, yellow, strings.TrimSpace(resp.Result), reset)
+				break
+			}
+
+			// Gate: TDD Green — tests must pass
+			passed, output := runGate(cfg.TestCommand, false)
+			if !passed {
+				lastGateOutput = output
+				fmt.Printf("  %s%s✗ TDD Green — tests still failing%s\n", bold, red, reset)
+				if retry == maxRetries {
+					fmt.Printf("  %s%s⚠ Retries exhausted for implementation phase%s\n", bold, yellow, reset)
+				}
+				continue
+			}
+			fmt.Printf("  %s%s✓ TDD Green — all tests pass%s\n", bold, green, reset)
+
+			// Gate: Check commands
+			allChecksPass := true
+			for _, check := range cfg.CheckCommands {
+				checkPassed, checkOutput := runGate(check, false)
+				if !checkPassed {
+					lastGateOutput = checkOutput
+					fmt.Printf("  %s%s✗ Check failed: %s%s\n", bold, red, check, reset)
+					allChecksPass = false
+					break
+				}
+			}
+			if !allChecksPass {
+				if retry == maxRetries {
+					fmt.Printf("  %s%s⚠ Retries exhausted for implementation phase%s\n", bold, yellow, reset)
+				}
+				continue
+			}
+
+			if len(cfg.CheckCommands) > 0 {
+				fmt.Printf("  %s%s✓ All checks pass%s\n", bold, green, reset)
+			}
+			phase2Success = true
+			break
+		}
+
+		if !phase2Success {
+			if guided {
+				choice := handleRetryExhausted(scanner, "implementation", item.Description)
+				if choice == "skip" {
+					continue
+				} else if choice == "quit" {
+					return
+				}
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  %s%s✗ Implementation gates failed after %d retries — halting build%s\n\n", bold, red, maxRetries, reset)
+			os.Exit(1)
+		}
+
+		fmt.Printf("  %s%s✓ Item complete (TDD verified)%s\n", bold, green, reset)
+
+		// Show PRD status
+		prd, _ = loadPRD()
 		done := 0
-		for _, item := range prd {
-			if item.Passes {
+		for _, p := range prd {
+			if p.Passes {
 				done++
 			}
 		}
 		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, len(prd), reset)
 	}
+}
+
+// handleRetryExhausted prompts the user in guided mode when retries are exhausted.
+// Returns "skip", "retry", or "quit".
+func handleRetryExhausted(scanner *bufio.Scanner, phase string, itemDesc string) string {
+	fmt.Printf("\n  %s%s⚠ %s phase failed for: %s%s\n", bold, yellow, phase, itemDesc, reset)
+	fmt.Printf("  %s(s)kip this item, (r)etry, or (q)uit?%s ", dim, reset)
+	if scanner.Scan() {
+		switch strings.ToLower(strings.TrimSpace(scanner.Text())) {
+		case "r", "retry":
+			return "retry"
+		case "q", "quit":
+			return "quit"
+		}
+	}
+	return "skip"
 }
 
 // --- Guided flow (no-arg mode) ---
@@ -931,7 +1324,11 @@ func cmdGuided(claudeCmdFlag string) {
 		return
 	}
 
-	iterInput := readLine(scanner, fmt.Sprintf("How many iterations? (%d remaining, enter=all, 0=skip)", incomplete))
+	iterInput := readLine(scanner, fmt.Sprintf("How many iterations? (%d remaining, enter=all, 0=skip, tdd=TDD mode)", incomplete))
+	if iterInput == "tdd" {
+		cmdBuildTDD(incomplete, effectiveModel, effectiveCmd, cfg, 3, true)
+		return
+	}
 	iterations := incomplete
 	if iterInput == "0" {
 		fmt.Printf("\n  %s%s✓ Skipping build. Run `ralph build` when ready.%s\n\n", bold, green, reset)
@@ -971,8 +1368,12 @@ func cmdGuided(claudeCmdFlag string) {
 		}
 
 		if strings.Contains(resp.Result, "<COMPLETE>") {
-			fmt.Printf("  %s%s✓ PRD complete!%s\n\n", bold, green, reset)
-			break
+			allDone, done, total := prdActuallyComplete()
+			if allDone {
+				fmt.Printf("  %s%s✓ PRD complete!%s\n\n", bold, green, reset)
+				break
+			}
+			fmt.Printf("  %s%s⚠ Claude reported complete, but %d/%d PRD items remain — continuing%s\n\n", bold, yellow, total-done, total, reset)
 		}
 
 		if strings.Contains(resp.Result, "<BLOCKED>") {
@@ -983,25 +1384,12 @@ func cmdGuided(claudeCmdFlag string) {
 		fmt.Printf("  %s%s✓ Iteration %d complete%s\n\n", bold, green, iter, reset)
 
 		// Show current PRD status
-		prd, _ := loadPRD()
-		done := 0
-		for _, item := range prd {
-			if item.Passes {
-				done++
-			}
-		}
-		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, len(prd), reset)
+		_, done, total := prdActuallyComplete()
+		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, total, reset)
 	}
 
 	// Final status
-	prd, _ = loadPRD()
-	done := 0
-	total := len(prd)
-	for _, item := range prd {
-		if item.Passes {
-			done++
-		}
-	}
+	_, done, total := prdActuallyComplete()
 	remaining := total - done
 	if remaining > 0 {
 		fmt.Printf("  %s%d/%d complete — %d remaining. Run `ralph` or `ralph build %d` to continue%s\n", dim, done, total, remaining, remaining, reset)
@@ -1023,6 +1411,8 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  %sCommands:%s\n", dim, reset)
 	fmt.Fprintf(os.Stderr, "    plan  \"description\"                 Generate a PRD through Q&A\n")
 	fmt.Fprintf(os.Stderr, "    build [N]                           Implement N iterations (default: 1)\n")
+	fmt.Fprintf(os.Stderr, "    build --tdd [N]                     TDD gated build (test → red → implement → green)\n")
+	fmt.Fprintf(os.Stderr, "    build --tdd --retries 5 [N]         TDD with custom retry count (default: 3)\n")
 	fmt.Fprintf(os.Stderr, "    init                                Scaffold .ralph/ directory\n")
 	fmt.Fprintf(os.Stderr, "    status                              Show PRD progress\n")
 	fmt.Fprintf(os.Stderr, "\n")
