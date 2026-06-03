@@ -120,6 +120,21 @@ func printWelcome() {
 		right = append(right, fmt.Sprintf("  %s%d/%d items complete%s", dim, done, len(prd), reset))
 	}
 
+	// Cumulative usage
+	var cumulative UsageTotals
+	if data, err := os.ReadFile(".ralph/usage.json"); err == nil {
+		json.Unmarshal(data, &cumulative)
+	}
+	if cumulative.Calls > 0 {
+		right = append(right, dim+"  "+strings.Repeat("─", 40)+reset)
+		right = append(right, bold+white+"Usage (all time)"+reset)
+		right = append(right, fmt.Sprintf("  %s%d calls · %s in · %s out · $%.4f%s",
+			dim, cumulative.Calls,
+			formatTokens(cumulative.InputTokens),
+			formatTokens(cumulative.OutputTokens),
+			cumulative.CostUSD, reset))
+	}
+
 	leftWidth := 24
 	rightWidth := 46
 
@@ -516,6 +531,11 @@ func runClaude(claudeCmd string, sessionID string, prompt string, model string, 
 	}
 
 	usage.Add(resp)
+	fmt.Printf("  %s[$%.4f · %s in · %s out · %ds]%s\n",
+		dim, usage.Session.CostUSD,
+		formatTokens(usage.Session.InputTokens),
+		formatTokens(usage.Session.OutputTokens),
+		usage.Session.DurationMS/1000, reset)
 	return resp, nil
 }
 
