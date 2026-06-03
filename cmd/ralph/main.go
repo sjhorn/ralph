@@ -298,25 +298,56 @@ type ClaudeResponse struct {
 	Usage        ClaudeUsage `json:"usage"`
 }
 
-// UsageTracker accumulates token usage across multiple Claude calls.
+// UsageTotals holds accumulated token usage counters.
+type UsageTotals struct {
+	CostUSD             float64 `json:"cost_usd"`
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	CacheReadTokens     int     `json:"cache_read_tokens"`
+	CacheCreationTokens int     `json:"cache_creation_tokens"`
+	DurationMS          int     `json:"duration_ms"`
+	Calls               int     `json:"calls"`
+}
+
+// UsageTracker tracks both session and cumulative usage.
 type UsageTracker struct {
-	TotalCostUSD             float64
-	TotalInputTokens         int
-	TotalOutputTokens        int
-	TotalCacheReadTokens     int
-	TotalCacheCreationTokens int
-	TotalDurationMS          int
-	TotalCalls               int
+	Session    UsageTotals
+	Cumulative UsageTotals
 }
 
 func (u *UsageTracker) Add(resp ClaudeResponse) {
-	u.TotalCostUSD += resp.TotalCostUSD
-	u.TotalInputTokens += resp.Usage.InputTokens
-	u.TotalOutputTokens += resp.Usage.OutputTokens
-	u.TotalCacheReadTokens += resp.Usage.CacheReadInputTokens
-	u.TotalCacheCreationTokens += resp.Usage.CacheCreationInputTokens
-	u.TotalDurationMS += resp.DurationMS
-	u.TotalCalls++
+	u.Session.CostUSD += resp.TotalCostUSD
+	u.Session.InputTokens += resp.Usage.InputTokens
+	u.Session.OutputTokens += resp.Usage.OutputTokens
+	u.Session.CacheReadTokens += resp.Usage.CacheReadInputTokens
+	u.Session.CacheCreationTokens += resp.Usage.CacheCreationInputTokens
+	u.Session.DurationMS += resp.DurationMS
+	u.Session.Calls++
+}
+
+func (u *UsageTracker) Load() {
+	data, err := os.ReadFile(".ralph/usage.json")
+	if err != nil {
+		return
+	}
+	json.Unmarshal(data, &u.Cumulative)
+}
+
+func (u *UsageTracker) Save() {
+	// Merge session into cumulative
+	u.Cumulative.CostUSD += u.Session.CostUSD
+	u.Cumulative.InputTokens += u.Session.InputTokens
+	u.Cumulative.OutputTokens += u.Session.OutputTokens
+	u.Cumulative.CacheReadTokens += u.Session.CacheReadTokens
+	u.Cumulative.CacheCreationTokens += u.Session.CacheCreationTokens
+	u.Cumulative.DurationMS += u.Session.DurationMS
+	u.Cumulative.Calls += u.Session.Calls
+
+	data, err := json.MarshalIndent(u.Cumulative, "", "  ")
+	if err != nil {
+		return
+	}
+	os.WriteFile(".ralph/usage.json", append(data, '\n'), 0644)
 }
 
 func formatTokens(n int) string {
@@ -329,19 +360,24 @@ func formatTokens(n int) string {
 	return strconv.Itoa(n)
 }
 
+func printUsageLine(label string, t UsageTotals) {
+	fmt.Printf("  %s│%s  %s%-10s%s %scalls:%s %-4d %sduration:%s %-5s %sinput:%s %-7s %soutput:%s %-7s %scost:%s $%.4f\n",
+		dim, reset, dim, label, reset,
+		dim, reset, t.Calls,
+		dim, reset, fmt.Sprintf("%ds", t.DurationMS/1000),
+		dim, reset, formatTokens(t.InputTokens),
+		dim, reset, formatTokens(t.OutputTokens),
+		dim, reset, t.CostUSD)
+}
+
 func (u *UsageTracker) Print() {
-	if u.TotalCalls == 0 {
+	if u.Session.Calls == 0 {
 		return
 	}
+	u.Save()
 	fmt.Printf("\n  %s╭─ usage%s\n", dim, reset)
-	fmt.Printf("  %s│%s  %scalls:%s %d  %sduration:%s %ds\n",
-		dim, reset, dim, reset, u.TotalCalls, dim, reset, u.TotalDurationMS/1000)
-	fmt.Printf("  %s│%s  %sinput:%s %s  %soutput:%s %s  %scache read:%s %s  %scache write:%s %s\n",
-		dim, reset, dim, reset, formatTokens(u.TotalInputTokens),
-		dim, reset, formatTokens(u.TotalOutputTokens),
-		dim, reset, formatTokens(u.TotalCacheReadTokens),
-		dim, reset, formatTokens(u.TotalCacheCreationTokens))
-	fmt.Printf("  %s│%s  %scost:%s $%.4f\n", dim, reset, dim, reset, u.TotalCostUSD)
+	printUsageLine("session", u.Session)
+	printUsageLine("total", u.Cumulative)
 	fmt.Printf("  %s╰─%s\n", dim, reset)
 }
 
@@ -742,6 +778,7 @@ func cmdStatus() {
 // --- Subcommand: plan ---
 
 func cmdPlan(args []string) {
+	usage.Load()
 	fs := flag.NewFlagSet("plan", flag.ExitOnError)
 	model := fs.String("model", "", "Claude model to use")
 	claudeCmd := fs.String("claude-cmd", "", "Claude CLI command (default: claude)")
@@ -865,6 +902,7 @@ func cmdPlan(args []string) {
 // --- Subcommand: build ---
 
 func cmdBuild(args []string) {
+	usage.Load()
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	model := fs.String("model", "", "Claude model to use")
 	claudeCmd := fs.String("claude-cmd", "", "Claude CLI command (default: claude)")
@@ -1231,6 +1269,7 @@ func readLine(scanner *bufio.Scanner, prompt string) string {
 }
 
 func cmdGuided(claudeCmdFlag string, tddMode bool) {
+	usage.Load()
 	fmt.Println()
 	printWelcome()
 	fmt.Println()
