@@ -30,7 +30,8 @@ const (
 	blue    = "\033[34m"
 )
 
-const version = "0.1.0"
+// version is set by goreleaser via ldflags at build time.
+var version = "dev"
 
 func ralphArtLines() []string {
 	e := "\033"

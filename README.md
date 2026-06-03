@@ -8,16 +8,31 @@ Inspired by [Adam Tuttle's](https://adamtuttle.codes) RALPH workflow for Claude 
 
 ## Prerequisites
 
-- Go 1.22+
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated
 
 ## Installation
+
+### Download a release (no Go required)
+
+Grab the latest binary for your platform from [GitHub Releases](https://github.com/sjhorn/ralph/releases), extract it, and add it to your PATH.
+
+```bash
+# macOS (Apple Silicon)
+curl -sL https://github.com/sjhorn/ralph/releases/latest/download/ralph_$(curl -s https://api.github.com/repos/sjhorn/ralph/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_darwin_arm64.tar.gz | tar xz
+sudo mv ralph /usr/local/bin/
+
+# Linux (amd64)
+curl -sL https://github.com/sjhorn/ralph/releases/latest/download/ralph_$(curl -s https://api.github.com/repos/sjhorn/ralph/releases/latest | grep tag_name | cut -d '"' -f4 | sed 's/^v//')_linux_amd64.tar.gz | tar xz
+sudo mv ralph /usr/local/bin/
+```
+
+### Go install
 
 ```bash
 go install github.com/sjhorn/ralph/cmd/ralph@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
 git clone https://github.com/sjhorn/ralph.git
