@@ -1085,7 +1085,9 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 
 	scanner := bufio.NewScanner(os.Stdin)
 
-	for iter := 1; iter <= iterations; iter++ {
+	iter := 0
+	for iter < iterations {
+		iter++
 		prd, err := loadPRD()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
@@ -1117,6 +1119,7 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 		// Phase 1: Write Tests
 		phase1Success := false
 		var lastGateOutput string
+		var testSessionID string
 		for retry := 0; retry <= maxRetries; retry++ {
 			prompt := fmt.Sprintf(tddTestWriterPrompt, item.Description, stepsStr)
 			if retry > 0 {
@@ -1128,12 +1131,13 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 				retryLabel = fmt.Sprintf(" (retry %d/%d)", retry, maxRetries)
 			}
 			spin := newSpinner(fmt.Sprintf("Writing tests%s...", retryLabel))
-			resp, err := runClaude(claudeCmd, "", prompt, model, allowedTools)
+			resp, err := runClaude(claudeCmd, testSessionID, prompt, model, allowedTools)
 			spin.stop()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
 				os.Exit(1)
 			}
+			testSessionID = resp.SessionID
 
 			if strings.Contains(resp.Result, "<BLOCKED>") {
 				fmt.Printf("  %s%s⚠ Blocked: %s%s\n\n", bold, yellow, strings.TrimSpace(resp.Result), reset)
@@ -1163,7 +1167,8 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 				} else if choice == "quit" {
 					return
 				}
-				// "retry" — but we already exhausted retries, so skip for now
+				// "retry" — re-run this item by decrementing iter
+				iter--
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "  %s%s✗ TDD Red gate failed after %d retries — halting build%s\n\n", bold, red, maxRetries, reset)
@@ -1173,6 +1178,7 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 		// Phase 2: Implement
 		phase2Success := false
 		lastGateOutput = ""
+		var implSessionID string
 		for retry := 0; retry <= maxRetries; retry++ {
 			prompt := fmt.Sprintf(tddImplementPrompt, item.Description, stepsStr)
 			if retry > 0 {
@@ -1184,12 +1190,13 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 				retryLabel = fmt.Sprintf(" (retry %d/%d)", retry, maxRetries)
 			}
 			spin := newSpinner(fmt.Sprintf("Implementing%s...", retryLabel))
-			resp, err := runClaude(claudeCmd, "", prompt, model, allowedTools)
+			resp, err := runClaude(claudeCmd, implSessionID, prompt, model, allowedTools)
 			spin.stop()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
 				os.Exit(1)
 			}
+			implSessionID = resp.SessionID
 
 			if strings.Contains(resp.Result, "<BLOCKED>") {
 				fmt.Printf("  %s%s⚠ Blocked: %s%s\n\n", bold, yellow, strings.TrimSpace(resp.Result), reset)
@@ -1241,6 +1248,8 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 				} else if choice == "quit" {
 					return
 				}
+				// "retry" — re-run this item by decrementing iter
+				iter--
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "  %s%s✗ Implementation gates failed after %d retries — halting build%s\n\n", bold, red, maxRetries, reset)
