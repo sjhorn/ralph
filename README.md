@@ -52,6 +52,16 @@ cd ralph
 make build
 ```
 
+### Upgrading
+
+The download scripts above always fetch the latest release, so just re-run them to upgrade. For Go installs:
+
+```bash
+go install github.com/sjhorn/ralph/cmd/ralph@latest
+```
+
+Check your current version with `ralph --help` — the version is shown in the banner title bar.
+
 ## Quick Start
 
 The simplest way to use ralph is the guided mode — just run `ralph` with no arguments:
