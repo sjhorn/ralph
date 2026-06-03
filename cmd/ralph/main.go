@@ -1196,8 +1196,11 @@ func cmdGuided(claudeCmdFlag string) {
 		}
 		fmt.Println()
 
-		choice := readLine(scanner, "Continue building (b), add to plan (p), start fresh (f), or quit (q)?")
+		choice := readLine(scanner, "Continue building (b), TDD build (t), add to plan (p), start fresh (f), or quit (q)?")
 		switch strings.ToLower(choice) {
+		case "t", "tdd":
+			cmdBuildTDD(incomplete, effectiveModel, effectiveCmd, cfg, 3, true)
+			return
 		case "b", "build":
 			skipToBuild = true
 		case "f", "fresh":

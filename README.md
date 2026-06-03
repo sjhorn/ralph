@@ -82,9 +82,9 @@ ralph
 This walks you through the full workflow interactively:
 
 1. Initializes `.ralph/` if needed
-2. If an existing PRD has incomplete items, offers to **build**, **add to plan**, **start fresh**, or **quit**
+2. If an existing PRD has incomplete items, offers to **build**, **TDD build**, **add to plan**, **start fresh**, or **quit**
 3. Asks for a feature description and runs Q&A with Claude to generate a PRD
-4. Asks how many iterations to run
+4. Asks how many iterations to run (or type `tdd` to enter TDD mode)
 5. Builds iteratively, showing progress after each iteration
 6. Reports final status
 
