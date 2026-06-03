@@ -23,6 +23,20 @@ go vet ./...
 
 The single-file architecture is intentional — ralph is a simple CLI with no internal packages and stdlib-only dependencies.
 
+## Releasing
+
+Releases are built by GoReleaser via GitHub Actions, triggered by pushing a git tag. Binary version is set from the tag via ldflags.
+
+**Always bump the tag** — never delete and re-push the same tag. Re-pushing a tag breaks GoReleaser caching, confuses `ralph update`, and can leave users on a stale binary that reports the "latest" version.
+
+```bash
+# After committing, bump the patch version:
+git tag v0.X.Y
+git push origin main v0.X.Y
+```
+
+Use semver: bump patch for fixes/polish, minor for features, major for breaking changes.
+
 ## Origin & Design Reference
 
 Ralph is a Go reimplementation of Adam Tuttle's RALPH workflow. See `docs/adam-tuttle-ralph-workflow.md` for the original blog post.
