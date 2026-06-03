@@ -54,13 +54,21 @@ make build
 
 ### Upgrading
 
-The download scripts above always fetch the latest release, so just re-run them to upgrade. For Go installs:
+Check your current version with `ralph --help` — the version is shown in the banner title bar.
+
+**Binary:** Re-run the same download script for your platform — it always fetches the latest release. Or download manually from [GitHub Releases](https://github.com/sjhorn/ralph/releases) and replace the existing binary.
+
+**Go install:**
 
 ```bash
 go install github.com/sjhorn/ralph/cmd/ralph@latest
 ```
 
-Check your current version with `ralph --help` — the version is shown in the banner title bar.
+**Build from source:**
+
+```bash
+cd ralph && git pull && make build
+```
 
 ## Quick Start
 
