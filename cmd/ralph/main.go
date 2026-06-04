@@ -741,7 +741,7 @@ func loadPlanSession() (PlanSession, bool) {
 	if err := json.Unmarshal(data, &ps); err != nil {
 		return ps, false
 	}
-	if ps.SessionID == "" || ps.Description == "" {
+	if ps.Description == "" {
 		return ps, false
 	}
 	return ps, true
@@ -946,7 +946,7 @@ func cmdPlan(args []string) {
 	var spin *spinner
 	startRound := 1
 
-	if ps, ok := loadPlanSession(); ok && ps.Description == description {
+	if ps, ok := loadPlanSession(); ok && ps.Description == description && ps.SessionID != "" {
 		fmt.Printf("  %s%s⚡ Resuming previous planning session%s\n\n", bold, yellow, reset)
 		sessionID = ps.SessionID
 		startRound = ps.Round
@@ -977,6 +977,9 @@ func cmdPlan(args []string) {
 
 		printHeader(description, effectiveModel, *maxRounds, *output)
 
+		// Save description before calling Claude so it survives a crash
+		savePlanSession(PlanSession{Description: description, Model: effectiveModel, Round: 1})
+
 		spin = newSpinner("Thinking...")
 		resp, err = runClaude(effectiveCmd, "", initialPrompt, effectiveModel, nil)
 		spin.stop()
@@ -987,7 +990,7 @@ func cmdPlan(args []string) {
 		sessionID = resp.SessionID
 	}
 
-	// Save session immediately so it can be resumed
+	// Update session with session ID now that we have one
 	savePlanSession(PlanSession{Description: description, SessionID: sessionID, Model: effectiveModel, Round: startRound})
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -1525,19 +1528,22 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 			choice := readLine(scanner, "Resume (y) or start fresh (n)?")
 			if strings.ToLower(choice) == "y" || choice == "" {
 				description = ps.Description
-				sessionID = ps.SessionID
-				startRound = ps.Round
+				if ps.SessionID != "" {
+					sessionID = ps.SessionID
+					startRound = ps.Round
 
-				printHeader(description, effectiveModel, maxRounds, ".ralph/prd.json")
+					printHeader(description, effectiveModel, maxRounds, ".ralph/prd.json")
 
-				spin := newSpinner("Resuming...")
-				resp, err = runClaude(effectiveCmd, sessionID, "Please continue where we left off. Show your current questions or signal <DONE> if ready.", effectiveModel, nil)
-				spin.stop()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "  %s%s✗ Error resuming: %v%s\n", bold, red, err, reset)
-					clearPlanSession()
-					os.Exit(1)
+					spin := newSpinner("Resuming...")
+					resp, err = runClaude(effectiveCmd, sessionID, "Please continue where we left off. Show your current questions or signal <DONE> if ready.", effectiveModel, nil)
+					spin.stop()
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "  %s%s✗ Error resuming: %v%s\n", bold, red, err, reset)
+						clearPlanSession()
+						os.Exit(1)
+					}
 				}
+				// If no sessionID, description is set — falls through to fresh session with saved description
 			} else {
 				clearPlanSession()
 			}
@@ -1550,8 +1556,10 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 				fmt.Printf("  %s%s⚠ No description provided, exiting.%s\n\n", bold, yellow, reset)
 				return
 			}
+		}
 
-			// Load existing PRD context
+		// Start fresh Claude session if we don't have one yet
+		if sessionID == "" {
 			existingPRD := ""
 			if data, err := os.ReadFile(".ralph/prd.json"); err == nil {
 				content := strings.TrimSpace(string(data))
@@ -1564,6 +1572,9 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 
 			printHeader(description, effectiveModel, maxRounds, ".ralph/prd.json")
 
+			// Save description before calling Claude so it survives a crash
+			savePlanSession(PlanSession{Description: description, Model: effectiveModel, Round: 1})
+
 			spin := newSpinner("Thinking...")
 			resp, err = runClaude(effectiveCmd, "", initialPrompt, effectiveModel, nil)
 			spin.stop()
@@ -1574,7 +1585,7 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 			sessionID = resp.SessionID
 		}
 
-		// Save session so it can be resumed after crash
+		// Update session with session ID now that we have one
 		savePlanSession(PlanSession{Description: description, SessionID: sessionID, Model: effectiveModel, Round: startRound})
 
 		for round := startRound; round <= maxRounds; round++ {
