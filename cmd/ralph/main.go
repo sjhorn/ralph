@@ -544,17 +544,23 @@ func runClaude(claudeCmd string, sessionID string, prompt string, model string, 
 
 	output, err := cmd.Output()
 	if err != nil {
+		var errMsg string
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return ClaudeResponse{}, fmt.Errorf("%s exited with code %d — this may indicate a quota limit, authentication issue, or interrupted session", claudeCmd, exitErr.ExitCode())
+			errMsg = fmt.Sprintf("%s exited with code %d — this may indicate a quota limit, authentication issue, or interrupted session\nstderr: %s", claudeCmd, exitErr.ExitCode(), string(exitErr.Stderr))
+		} else if _, lookErr := exec.LookPath(claudeCmd); lookErr != nil {
+			errMsg = fmt.Sprintf("%s not found in PATH", claudeCmd)
+		} else {
+			errMsg = fmt.Sprintf("%s command failed: %v", claudeCmd, err)
 		}
-		if _, lookErr := exec.LookPath(claudeCmd); lookErr != nil {
-			return ClaudeResponse{}, fmt.Errorf("%s not found in PATH", claudeCmd)
-		}
-		return ClaudeResponse{}, fmt.Errorf("%s command failed: %w", claudeCmd, err)
+		traceLog("=== ERROR [%s] ===\n%s\nstdout: %s\n\n",
+			time.Now().Format("2006-01-02 15:04:05"), errMsg, string(output))
+		return ClaudeResponse{}, fmt.Errorf("%s", errMsg)
 	}
 
 	var resp ClaudeResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
+		traceLog("=== ERROR [%s] ===\nfailed to parse response: %v\nraw output: %s\n\n",
+			time.Now().Format("2006-01-02 15:04:05"), err, string(output))
 		return ClaudeResponse{}, fmt.Errorf("failed to parse response: %w\nraw output: %s", err, string(output))
 	}
 
