@@ -105,10 +105,10 @@ func printWelcome() {
 	prd, err := loadPRD()
 	if err != nil {
 		right = append(right, bold+white+"Status"+reset)
-		right = append(right, dim+"  No project found"+reset)
+		right = append(right, red+"  No project found"+reset)
 	} else if len(prd) == 0 {
 		right = append(right, bold+white+"Status"+reset)
-		right = append(right, dim+"  PRD empty — run "+reset+cyan+"ralph plan"+reset)
+		right = append(right, red+"  PRD empty — run "+reset+cyan+"ralph plan"+reset)
 	} else {
 		done := 0
 		for _, item := range prd {
@@ -710,6 +710,41 @@ func loadPRD() ([]PRDItem, error) {
 	return prd, nil
 }
 
+// PlanSession persists the planning conversation so it can be resumed after a crash.
+type PlanSession struct {
+	Description string `json:"description"`
+	SessionID   string `json:"session_id"`
+	Model       string `json:"model"`
+	Round       int    `json:"round"`
+}
+
+func savePlanSession(ps PlanSession) {
+	data, err := json.MarshalIndent(ps, "", "  ")
+	if err != nil {
+		return
+	}
+	os.WriteFile(".ralph/plan_session.json", append(data, '\n'), 0644)
+}
+
+func loadPlanSession() (PlanSession, bool) {
+	var ps PlanSession
+	data, err := os.ReadFile(".ralph/plan_session.json")
+	if err != nil {
+		return ps, false
+	}
+	if err := json.Unmarshal(data, &ps); err != nil {
+		return ps, false
+	}
+	if ps.SessionID == "" || ps.Description == "" {
+		return ps, false
+	}
+	return ps, true
+}
+
+func clearPlanSession() {
+	os.Remove(".ralph/plan_session.json")
+}
+
 // stripMarkdownFencing removes ```json ... ``` wrapping from LLM output.
 func stripMarkdownFencing(s string) string {
 	s = strings.TrimSpace(s)
@@ -841,7 +876,7 @@ func cmdStatus() {
 	}
 
 	if len(prd) == 0 {
-		fmt.Printf("  %s%s⚠ PRD is empty. Run `ralph plan` first.%s\n\n", bold, yellow, reset)
+		fmt.Printf("  %s%s✗ PRD is empty. Run `ralph plan` first.%s\n\n", bold, red, reset)
 		return
 	}
 
@@ -898,31 +933,60 @@ func cmdPlan(args []string) {
 
 	description := fs.Arg(0)
 
-	// Load existing PRD if present, so Claude can build on prior work
-	existingPRD := ""
-	if data, err := os.ReadFile(*output); err == nil {
-		content := strings.TrimSpace(string(data))
-		if content != "" && content != "[]" {
-			existingPRD = fmt.Sprintf("\n\nExisting PRD (from previous planning sessions):\n%s\n\nBuild on this existing PRD. You may add new items, refine existing ones, or leave completed items as-is.", content)
+	// Check for a saved planning session to resume
+	var sessionID string
+	var resp ClaudeResponse
+	var err error
+	var spin *spinner
+	startRound := 1
+
+	if ps, ok := loadPlanSession(); ok && ps.Description == description {
+		fmt.Printf("  %s%s⚡ Resuming previous planning session%s\n\n", bold, yellow, reset)
+		sessionID = ps.SessionID
+		startRound = ps.Round
+
+		printHeader(description, effectiveModel, *maxRounds, *output)
+
+		// Resume by asking Claude to continue
+		spin = newSpinner("Resuming...")
+		resp, err = runClaude(effectiveCmd, sessionID, "Please continue where we left off. Show your current questions or signal <DONE> if ready.", effectiveModel, nil)
+		spin.stop()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s%s✗ Error resuming: %v%s\n", bold, red, err, reset)
+			clearPlanSession()
+			os.Exit(1)
 		}
+	} else {
+		// Fresh session
+		// Load existing PRD if present, so Claude can build on prior work
+		existingPRD := ""
+		if data, err := os.ReadFile(*output); err == nil {
+			content := strings.TrimSpace(string(data))
+			if content != "" && content != "[]" {
+				existingPRD = fmt.Sprintf("\n\nExisting PRD (from previous planning sessions):\n%s\n\nBuild on this existing PRD. You may add new items, refine existing ones, or leave completed items as-is.", content)
+			}
+		}
+
+		initialPrompt := fmt.Sprintf("%s\n\nFeature to plan: %s%s\n\nPlease ask your clarifying questions.", planSystemPrompt, description, existingPRD)
+
+		printHeader(description, effectiveModel, *maxRounds, *output)
+
+		spin = newSpinner("Thinking...")
+		resp, err = runClaude(effectiveCmd, "", initialPrompt, effectiveModel, nil)
+		spin.stop()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s%s✗ Error: %v%s\n", bold, red, err, reset)
+			os.Exit(1)
+		}
+		sessionID = resp.SessionID
 	}
 
-	initialPrompt := fmt.Sprintf("%s\n\nFeature to plan: %s%s\n\nPlease ask your clarifying questions.", planSystemPrompt, description, existingPRD)
+	// Save session immediately so it can be resumed
+	savePlanSession(PlanSession{Description: description, SessionID: sessionID, Model: effectiveModel, Round: startRound})
 
-	printHeader(description, effectiveModel, *maxRounds, *output)
-
-	spin := newSpinner("Thinking...")
-	resp, err := runClaude(effectiveCmd, "", initialPrompt, effectiveModel, nil)
-	spin.stop()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  %s%s✗ Error: %v%s\n", bold, red, err, reset)
-		os.Exit(1)
-	}
-
-	sessionID := resp.SessionID
 	scanner := bufio.NewScanner(os.Stdin)
 
-	for round := 1; round <= *maxRounds; round++ {
+	for round := startRound; round <= *maxRounds; round++ {
 		if strings.Contains(resp.Result, "<DONE>") {
 			printDone()
 			break
@@ -936,13 +1000,16 @@ func cmdPlan(args []string) {
 			break
 		}
 
-		spin := newSpinner("Thinking...")
+		spin = newSpinner("Thinking...")
 		resp, err = runClaude(effectiveCmd, sessionID, userInput, effectiveModel, nil)
 		spin.stop()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s%s✗ Error in round %d: %v%s\n", bold, red, round, err, reset)
 			os.Exit(1)
 		}
+
+		// Update saved session with current round
+		savePlanSession(PlanSession{Description: description, SessionID: sessionID, Model: effectiveModel, Round: round + 1})
 
 		if round == *maxRounds && !strings.Contains(resp.Result, "<DONE>") {
 			fmt.Printf("\n  %s%s⚠ Max rounds reached. Generating PRD with current information...%s\n", bold, yellow, reset)
@@ -986,6 +1053,7 @@ func cmdPlan(args []string) {
 		os.Exit(1)
 	}
 
+	clearPlanSession()
 	printPRDSummary(prd, *output)
 	usage.Print()
 }
@@ -1438,38 +1506,72 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 
 	// Step 3: Plan (skip if user chose to build directly)
 	if !skipToBuild {
-		fmt.Printf("  %s%sWhat feature would you like to plan?%s\n", bold, white, reset)
-		description := readLine(scanner, "")
-		if description == "" {
-			fmt.Printf("  %s%s⚠ No description provided, exiting.%s\n\n", bold, yellow, reset)
-			return
-		}
+		var description string
+		var sessionID string
+		var resp ClaudeResponse
+		var err error
+		startRound := 1
+		maxRounds := 10
 
-		// Load existing PRD context
-		existingPRD := ""
-		if data, err := os.ReadFile(".ralph/prd.json"); err == nil {
-			content := strings.TrimSpace(string(data))
-			if content != "" && content != "[]" {
-				existingPRD = fmt.Sprintf("\n\nExisting PRD (from previous planning sessions):\n%s\n\nBuild on this existing PRD. You may add new items, refine existing ones, or leave completed items as-is.", content)
+		// Check for a saved planning session to resume
+		if ps, ok := loadPlanSession(); ok {
+			fmt.Printf("  %s%s⚡ Previous planning session found: \"%s\"%s\n", bold, yellow, ps.Description, reset)
+			choice := readLine(scanner, "Resume (y) or start fresh (n)?")
+			if strings.ToLower(choice) == "y" || choice == "" {
+				description = ps.Description
+				sessionID = ps.SessionID
+				startRound = ps.Round
+
+				printHeader(description, effectiveModel, maxRounds, ".ralph/prd.json")
+
+				spin := newSpinner("Resuming...")
+				resp, err = runClaude(effectiveCmd, sessionID, "Please continue where we left off. Show your current questions or signal <DONE> if ready.", effectiveModel, nil)
+				spin.stop()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  %s%s✗ Error resuming: %v%s\n", bold, red, err, reset)
+					clearPlanSession()
+					os.Exit(1)
+				}
+			} else {
+				clearPlanSession()
 			}
 		}
 
-		maxRounds := 10
-		initialPrompt := fmt.Sprintf("%s\n\nFeature to plan: %s%s\n\nPlease ask your clarifying questions.", planSystemPrompt, description, existingPRD)
+		if description == "" {
+			fmt.Printf("  %s%sWhat feature would you like to plan?%s\n", bold, white, reset)
+			description = readLine(scanner, "")
+			if description == "" {
+				fmt.Printf("  %s%s⚠ No description provided, exiting.%s\n\n", bold, yellow, reset)
+				return
+			}
 
-		printHeader(description, effectiveModel, maxRounds, ".ralph/prd.json")
+			// Load existing PRD context
+			existingPRD := ""
+			if data, err := os.ReadFile(".ralph/prd.json"); err == nil {
+				content := strings.TrimSpace(string(data))
+				if content != "" && content != "[]" {
+					existingPRD = fmt.Sprintf("\n\nExisting PRD (from previous planning sessions):\n%s\n\nBuild on this existing PRD. You may add new items, refine existing ones, or leave completed items as-is.", content)
+				}
+			}
 
-		spin := newSpinner("Thinking...")
-		resp, err := runClaude(effectiveCmd, "", initialPrompt, effectiveModel, nil)
-		spin.stop()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
-			os.Exit(1)
+			initialPrompt := fmt.Sprintf("%s\n\nFeature to plan: %s%s\n\nPlease ask your clarifying questions.", planSystemPrompt, description, existingPRD)
+
+			printHeader(description, effectiveModel, maxRounds, ".ralph/prd.json")
+
+			spin := newSpinner("Thinking...")
+			resp, err = runClaude(effectiveCmd, "", initialPrompt, effectiveModel, nil)
+			spin.stop()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  %s%s✗ %v%s\n", bold, red, err, reset)
+				os.Exit(1)
+			}
+			sessionID = resp.SessionID
 		}
 
-		sessionID := resp.SessionID
+		// Save session so it can be resumed after crash
+		savePlanSession(PlanSession{Description: description, SessionID: sessionID, Model: effectiveModel, Round: startRound})
 
-		for round := 1; round <= maxRounds; round++ {
+		for round := startRound; round <= maxRounds; round++ {
 			if strings.Contains(resp.Result, "<DONE>") {
 				printDone()
 				break
@@ -1491,13 +1593,15 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 				os.Exit(1)
 			}
 
+			savePlanSession(PlanSession{Description: description, SessionID: sessionID, Model: effectiveModel, Round: round + 1})
+
 			if round == maxRounds && !strings.Contains(resp.Result, "<DONE>") {
 				fmt.Printf("\n  %s%s⚠ Max rounds reached. Generating PRD with current information...%s\n", bold, yellow, reset)
 			}
 		}
 
 		// Generate PRD
-		spin = newSpinner("Generating PRD...")
+		spin := newSpinner("Generating PRD...")
 		finalPrompt := "Now produce the PRD as a JSON array. Output ONLY valid JSON, no markdown fencing, no explanation."
 		resp, err = runClaude(effectiveCmd, sessionID, finalPrompt, effectiveModel, nil)
 		spin.stop()
@@ -1520,6 +1624,7 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 			os.Exit(1)
 		}
 
+		clearPlanSession()
 		printPRDSummary(prd, ".ralph/prd.json")
 	}
 
