@@ -710,6 +710,23 @@ func loadPRD() ([]PRDItem, error) {
 	return prd, nil
 }
 
+// stripMarkdownFencing removes ```json ... ``` wrapping from LLM output.
+func stripMarkdownFencing(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		// Remove first line (```json or ```)
+		if idx := strings.Index(s, "\n"); idx != -1 {
+			s = s[idx+1:]
+		}
+		// Remove trailing ```
+		if idx := strings.LastIndex(s, "```"); idx != -1 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+	return s
+}
+
 // prdActuallyComplete re-reads the PRD from disk and checks whether all items
 // truly have passes: true. Returns (allDone, done, total).
 func prdActuallyComplete() (bool, int, int) {
@@ -943,7 +960,7 @@ func cmdPlan(args []string) {
 	}
 
 	var prd []PRDItem
-	prdText := strings.TrimSpace(resp.Result)
+	prdText := stripMarkdownFencing(resp.Result)
 	if err := json.Unmarshal([]byte(prdText), &prd); err != nil {
 		fmt.Fprintf(os.Stderr, "  %s%s⚠ Warning: PRD output is not valid JSON: %v%s\n", bold, yellow, err, reset)
 		fmt.Fprintf(os.Stderr, "  %sRaw output:%s\n%s\n", dim, reset, prdText)
