@@ -272,6 +272,14 @@ Examples of test commands by language:
 If you cannot determine a test command, output:
 {"test_command": "", "reasoning": "why you couldn't determine it"}`
 
+const sessionSummaryPrompt = `Study the project directory, .ralph/prd.json and .ralph/progress.md to summarize what was accomplished in this session.
+
+Output a brief summary (2-4 lines) covering:
+1. What was built or changed
+2. How to run or view the result (e.g. "Run: python3 hello.py" or "Open: index.html" or "Run: go run .")
+
+Output ONLY the summary text, no markdown fencing, no JSON.`
+
 const buildSystemPrompt = `Study .ralph/prd.json and .ralph/progress.md.
 
 1. Find the highest-priority incomplete item to work on (ignore anything with passes: true) and work only on that item. This should be the one YOU decide has the highest priority — not necessarily the first item in the list.
@@ -381,13 +389,11 @@ func formatTokens(n int) string {
 }
 
 func printUsageLine(label string, t UsageTotals) {
-	fmt.Printf("  %s│%s  %s%-10s%s %scalls:%s %-4d %sduration:%s %-5s %sinput:%s %-7s %soutput:%s %-7s %scost:%s $%.4f\n",
+	fmt.Printf("  %s│%s  %s%-10s%s %d calls  %ds  %s tok in  %s tok out  $%.4f\n",
 		dim, reset, dim, label, reset,
-		dim, reset, t.Calls,
-		dim, reset, fmt.Sprintf("%ds", t.DurationMS/1000),
-		dim, reset, formatTokens(t.InputTokens),
-		dim, reset, formatTokens(t.OutputTokens),
-		dim, reset, t.CostUSD)
+		t.Calls, t.DurationMS/1000,
+		formatTokens(t.InputTokens), formatTokens(t.OutputTokens),
+		t.CostUSD)
 }
 
 func (u *UsageTracker) Print() {
@@ -396,8 +402,13 @@ func (u *UsageTracker) Print() {
 	}
 	u.Save()
 	fmt.Printf("\n  %s╭─ usage%s\n", dim, reset)
-	printUsageLine("session", u.Session)
-	printUsageLine("total", u.Cumulative)
+	if u.Cumulative.Calls == u.Session.Calls {
+		// First session for this project — no need to show both
+		printUsageLine("total", u.Cumulative)
+	} else {
+		printUsageLine("session", u.Session)
+		printUsageLine("total", u.Cumulative)
+	}
 	fmt.Printf("  %s╰─%s\n", dim, reset)
 }
 
@@ -506,6 +517,15 @@ func renderMarkdown(text string) string {
 	return out.String()
 }
 
+func traceLog(format string, args ...any) {
+	f, err := os.OpenFile(".ralph/trace.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, format, args...)
+}
+
 func runClaude(claudeCmd string, sessionID string, prompt string, model string, allowedTools []string) (ClaudeResponse, error) {
 	args := []string{"-p", "--output-format", "json", "--model", model}
 	if sessionID != "" {
@@ -514,6 +534,9 @@ func runClaude(claudeCmd string, sessionID string, prompt string, model string, 
 	for _, tool := range allowedTools {
 		args = append(args, "--allowedTools", tool)
 	}
+
+	traceLog("=== SEND [%s] ===\nmodel: %s | session: %s | tools: %v\n---\n%s\n\n",
+		time.Now().Format("2006-01-02 15:04:05"), model, sessionID, allowedTools, prompt)
 
 	cmd := exec.Command(claudeCmd, args...)
 	cmd.Stdin = strings.NewReader(prompt)
@@ -535,8 +558,12 @@ func runClaude(claudeCmd string, sessionID string, prompt string, model string, 
 		return ClaudeResponse{}, fmt.Errorf("failed to parse response: %w\nraw output: %s", err, string(output))
 	}
 
+	traceLog("=== RECV [%s] (%ds, $%.4f) ===\nsession: %s\n---\n%s\n\n",
+		time.Now().Format("2006-01-02 15:04:05"), resp.DurationMS/1000, resp.TotalCostUSD,
+		resp.SessionID, resp.Result)
+
 	usage.Add(resp)
-	fmt.Printf("  %s[$%.4f · %s in · %s out · %ds]%s\n",
+	fmt.Printf("  %s[$%.4f · %s tok in · %s tok out · %ds]%s\n",
 		dim, usage.Session.CostUSD,
 		formatTokens(usage.Session.InputTokens),
 		formatTokens(usage.Session.OutputTokens),
@@ -697,6 +724,28 @@ func prdActuallyComplete() (bool, int, int) {
 		}
 	}
 	return done == len(prd), done, len(prd)
+}
+
+func printSessionSummary(claudeCmd string, model string) {
+	_, done, _ := prdActuallyComplete()
+	if done == 0 {
+		return
+	}
+	spin := newSpinner("Summarizing...")
+	resp, err := runClaude(claudeCmd, "", sessionSummaryPrompt, model, []string{"Read"})
+	spin.stop()
+	if err != nil {
+		return
+	}
+	summary := strings.TrimSpace(resp.Result)
+	if summary == "" {
+		return
+	}
+	fmt.Printf("\n  %s%s╭─ summary%s\n", bold, green, reset)
+	for _, line := range strings.Split(summary, "\n") {
+		fmt.Printf("  %s│%s  %s\n", green, reset, line)
+	}
+	fmt.Printf("  %s╰─%s\n", green, reset)
 }
 
 func savePRD(prd []PRDItem) error {
@@ -1001,6 +1050,7 @@ func cmdBuild(args []string) {
 		_, done, total := prdActuallyComplete()
 		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, total, reset)
 	}
+	printSessionSummary(effectiveCmd, effectiveModel)
 	usage.Print()
 }
 
@@ -1273,6 +1323,7 @@ func cmdBuildTDD(iterations int, model string, claudeCmd string, cfg RalphConfig
 		}
 		fmt.Printf("  %s%d/%d PRD items complete%s\n\n", dim, done, len(prd), reset)
 	}
+	printSessionSummary(claudeCmd, model)
 	usage.Print()
 }
 
@@ -1551,6 +1602,7 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 	} else if total > 0 {
 		fmt.Printf("  %s%s✓ All %d PRD items complete!%s\n", bold, green, total, reset)
 	}
+	printSessionSummary(effectiveCmd, effectiveModel)
 	usage.Print()
 	fmt.Println()
 }
