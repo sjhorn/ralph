@@ -1506,7 +1506,7 @@ func cmdGuided(claudeCmdFlag string, tddMode bool) {
 			os.Exit(1)
 		}
 
-		prdText := strings.TrimSpace(resp.Result)
+		prdText := stripMarkdownFencing(resp.Result)
 		if err := json.Unmarshal([]byte(prdText), &prd); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s%s⚠ PRD output is not valid JSON: %v%s\n", bold, yellow, err, reset)
 			fmt.Fprintf(os.Stderr, "  %sRaw output:%s\n%s\n", dim, reset, prdText)
